@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Security Door & Fire Safety</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">🛡️</div>
+      <div>
+        <h2>SecureHome</h2>
+        <p>Safety Intelligence</p>
+      </div>
+    </div>
+
+    <nav>
+      <a class="nav-link active" href="#dashboard">▦ Dashboard</a>
+      <a class="nav-link" href="#monitoring">◉ Live Monitoring</a>
+      <a class="nav-link" href="#equipment">⚙ Equipment</a>
+      <a class="nav-link" href="#events">▤ Event History</a>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <span class="status-dot"></span>
+      Monitoring dashboard
+      <p>ESP32 · Google Sheets</p>
+    </div>
+  </aside>
+
+  <main class="main-content" id="dashboard">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">SECURITY MANAGEMENT</p>
+        <h1>Smart Security Dashboard</h1>
+        <p class="subtitle">Door access, fire detection and environment monitoring</p>
+      </div>
+
+      <div class="connection">
+        <span id="connectionDot" class="status-dot"></span>
+        <span id="connectionText">Connecting...</span>
+      </div>
+    </header>
+
+    <section class="alert-banner" id="safetyBanner">
+      <div class="alert-symbol" id="bannerIcon">🛡️</div>
+      <div>
+        <h3 id="bannerTitle">Checking safety status...</h3>
+        <p id="bannerMessage">Waiting for the latest spreadsheet readings.</p>
+      </div>
+      <span class="alert-tag" id="bannerTag">CHECKING</span>
+    </section>
+
+    <section class="section" id="monitoring">
+      <div class="section-heading">
+        <div>
+          <h2>Live Monitoring</h2>
+          <p>Latest values received from Google Sheets</p>
+        </div>
+        <span class="live-label"><span class="pulse"></span> LIVE</span>
+      </div>
+
+      <div class="metric-grid">
+        <article class="metric-card">
+          <div class="metric-top">
+            <span class="metric-icon orange">🌡️</span>
+            <span class="metric-label">Temperature</span>
+          </div>
+          <div class="metric-value">
+            <span id="temperatureValue">--</span>
+            <small>°C</small>
+          </div>
+          <p class="metric-foot" id="temperatureNote">Waiting for reading</p>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-top">
+            <span class="metric-icon red">🔥</span>
+            <span class="metric-label">Fire Detection</span>
+          </div>
+          <div class="metric-value small-value" id="fireValue">Unknown</div>
+          <p class="metric-foot" id="fireNote">Waiting for reading</p>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-top">
+            <span class="metric-icon blue">👥</span>
+            <span class="metric-label">People Count</span>
+          </div>
+          <div class="metric-value">
+            <span id="personsValue">--</span>
+          </div>
+          <p class="metric-foot">Latest recorded count</p>
+        </article>
+
+        <article class="metric-card">
+          <div class="metric-top">
+            <span class="metric-icon green">🔐</span>
+            <span class="metric-label">Door Access</span>
+          </div>
+          <div class="metric-value small-value" id="doorValue">Unknown</div>
+          <p class="metric-foot" id="fingerprintNote">No fingerprint information</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="equipment">
+      <div class="section-heading">
+        <div>
+          <h2>Equipment Status</h2>
+          <p>Most recently reported actuator states</p>
+        </div>
+      </div>
+
+      <div class="equipment-grid">
+        <article class="equipment-card">
+          <div class="equipment-icon">🌀</div>
+          <div class="equipment-info">
+            <h3>Cooling Fan</h3>
+            <p>Temperature control</p>
+          </div>
+          <span class="state-pill neutral" id="fanValue">Unknown</span>
+        </article>
+
+        <article class="equipment-card">
+          <div class="equipment-icon">💧</div>
+          <div class="equipment-info">
+            <h3>Water Pump</h3>
+            <p>Fire response equipment</p>
+          </div>
+          <span class="state-pill neutral" id="pumpValue">Unknown</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="events">
+      <div class="section-heading">
+        <div>
+          <h2>Recent Events</h2>
+          <p id="eventSummary">Waiting for spreadsheet data</p>
+        </div>
+        <button class="refresh-button" id="refreshButton" type="button">
+          ↻ Refresh now
+        </button>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Event</th>
+              <th>Fingerprint</th>
+              <th>People</th>
+              <th>Temperature</th>
+              <th>Fire</th>
+              <th>Fan</th>
+              <th>Pump</th>
+            </tr>
+          </thead>
+          <tbody id="eventsTable">
+            <tr>
+              <td colspan="9" class="empty-state">Loading events...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="last-updated">
+        Last successful update: <span id="lastUpdated">Not yet updated</span>
+      </p>
+    </section>
+
+    <footer>
+      <p>Smart Security Door & Fire Safety System</p>
+      <p>Use verified hardware readings for real-world safety decisions.</p>
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
