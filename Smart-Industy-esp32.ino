@@ -1,0 +1,609 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+// =================================================
+// WIFI
+// =================================================
+
+const char* ssid = "vivo 1816";
+const char* password = "987654321";
+
+
+// =================================================
+// GOOGLE APPS SCRIPT
+// =================================================
+
+const char* googleScriptURL =
+"https://script.google.com/macros/s/AKfycbzkXsDaHUn9Jmz8IgE3d1Bk4U86Q9korDsbEgK6v6GZ0CXzFohmG0B8FESK_oXJQWS5Dg/exec";
+
+
+// =================================================
+// UART
+// =================================================
+
+// ESP32 GPIO16 = RX
+// ESP32 GPIO17 = TX
+
+HardwareSerial ArduinoSerial(2);
+
+#define ESP_RX 16
+#define ESP_TX 17
+
+
+// =================================================
+// SENSOR VARIABLES
+// =================================================
+
+float temperature = 0.0;
+
+int fireStatus = 0;
+int fanStatus = 0;
+int pumpStatus = 0;
+
+int fingerprintID = 0;
+int personCount = 0;
+
+
+// =================================================
+// 5 SECOND TIMER
+// =================================================
+
+unsigned long lastSensorUpload = 0;
+
+const unsigned long SENSOR_INTERVAL = 5000;
+
+
+// =================================================
+// SETUP
+// =================================================
+
+void setup()
+{
+  Serial.begin(115200);
+
+  // UART with Arduino UNO
+  ArduinoSerial.begin(
+    9600,
+    SERIAL_8N1,
+    ESP_RX,
+    ESP_TX
+  );
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println("ESP32 SMART SECURITY DOOR");
+  Serial.println("======================================");
+
+  // Connect WiFi
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  Serial.println("WiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.println("--------------------------------------");
+  Serial.println("Waiting for Arduino UNO...");
+}
+
+
+// =================================================
+// LOOP
+// =================================================
+
+void loop()
+{
+  // ==============================================
+  // RECEIVE DATA FROM ARDUINO
+  // ==============================================
+
+  if (ArduinoSerial.available())
+  {
+    String data = ArduinoSerial.readStringUntil('\n');
+
+    data.trim();
+
+    if (data.length() > 0)
+    {
+      Serial.print("Received from UNO: ");
+      Serial.println(data);
+
+      processArduinoData(data);
+    }
+  }
+
+
+  // ==============================================
+  // SEND SENSOR DATA EVERY 5 SECONDS
+  // ==============================================
+
+  if (millis() - lastSensorUpload >= SENSOR_INTERVAL)
+  {
+    lastSensorUpload = millis();
+
+    Serial.println();
+    Serial.println("5-second sensor upload...");
+
+    sendToGoogleSheets(
+      "SENSOR_DATA",
+      0,
+      0,
+      temperature,
+      fireStatus,
+      fanStatus,
+      pumpStatus
+    );
+  }
+}
+
+
+// =================================================
+// PROCESS ARDUINO DATA
+// =================================================
+
+void processArduinoData(String data)
+{
+  // ==============================================
+  // UNO READY
+  // ==============================================
+
+  if (data == "UNO_READY")
+  {
+    Serial.println("Arduino UNO is ready.");
+  }
+
+
+  // ==============================================
+  // ACCESS DENIED
+  // ==============================================
+
+  else if (data == "ACCESS_DENIED")
+  {
+    Serial.println("ACCESS DENIED!");
+
+    sendToGoogleSheets(
+      "ACCESS_DENIED",
+      0,
+      0,
+      temperature,
+      fireStatus,
+      fanStatus,
+      pumpStatus
+    );
+  }
+
+
+  // ==============================================
+  // AUTHORIZED FINGERPRINT
+  // Format:
+  // AUTHORIZED,5
+  // ==============================================
+
+  else if (data.startsWith("AUTHORIZED,"))
+  {
+    int commaIndex = data.indexOf(',');
+
+    if (commaIndex != -1)
+    {
+      fingerprintID =
+        data.substring(commaIndex + 1).toInt();
+
+      Serial.print("Fingerprint ID: ");
+      Serial.println(fingerprintID);
+    }
+  }
+
+
+  // ==============================================
+  // DOOR RESULT
+  // Format:
+  // RESULT,5,2
+  // ==============================================
+
+  else if (data.startsWith("RESULT,"))
+  {
+    processResult(data);
+  }
+
+
+  // ==============================================
+  // FIRE
+  // Format:
+  // FIRE,42.5,1,1
+  // ==============================================
+
+  else if (data.startsWith("FIRE,"))
+  {
+    processFire(data);
+  }
+
+
+  // ==============================================
+  // SENSOR
+  // Format:
+  // SENSOR,31.5,0,0,0
+  // ==============================================
+
+  else if (data.startsWith("SENSOR,"))
+  {
+    processSensor(data);
+  }
+}
+
+
+// =================================================
+// PROCESS RESULT
+// =================================================
+
+void processResult(String data)
+{
+  int firstComma = data.indexOf(',');
+
+  int secondComma =
+    data.indexOf(',', firstComma + 1);
+
+  if (firstComma == -1 ||
+      secondComma == -1)
+  {
+    Serial.println("Invalid RESULT data");
+    return;
+  }
+
+  fingerprintID =
+    data.substring(
+      firstComma + 1,
+      secondComma
+    ).toInt();
+
+  personCount =
+    data.substring(
+      secondComma + 1
+    ).toInt();
+
+
+  Serial.println("--------------------------------------");
+  Serial.println("DOOR ACCESS RESULT");
+
+  Serial.print("Fingerprint ID: ");
+  Serial.println(fingerprintID);
+
+  Serial.print("Persons: ");
+  Serial.println(personCount);
+
+  Serial.println("--------------------------------------");
+
+
+  // Immediately send access event
+  sendToGoogleSheets(
+    "DOOR_ACCESS",
+    fingerprintID,
+    personCount,
+    temperature,
+    fireStatus,
+    fanStatus,
+    pumpStatus
+  );
+
+
+  // Reset these for normal sensor uploads
+  fingerprintID = 0;
+  personCount = 0;
+}
+
+
+// =================================================
+// PROCESS FIRE
+// =================================================
+
+void processFire(String data)
+{
+  int firstComma = data.indexOf(',');
+
+  int secondComma =
+    data.indexOf(',', firstComma + 1);
+
+  int thirdComma =
+    data.indexOf(',', secondComma + 1);
+
+  if (firstComma == -1 ||
+      secondComma == -1 ||
+      thirdComma == -1)
+  {
+    Serial.println("Invalid FIRE data");
+    return;
+  }
+
+
+  temperature =
+    data.substring(
+      firstComma + 1,
+      secondComma
+    ).toFloat();
+
+
+  fanStatus =
+    data.substring(
+      secondComma + 1,
+      thirdComma
+    ).toInt();
+
+
+  pumpStatus =
+    data.substring(
+      thirdComma + 1
+    ).toInt();
+
+
+  fireStatus = 1;
+
+
+  Serial.println("--------------------------------------");
+  Serial.println("🔥 FIRE DETECTED");
+
+  Serial.print("Temperature: ");
+  Serial.println(temperature);
+
+  Serial.print("Fan: ");
+  Serial.println(fanStatus);
+
+  Serial.print("Pump: ");
+  Serial.println(pumpStatus);
+
+  Serial.println("--------------------------------------");
+
+
+  // Immediately send fire event
+  sendToGoogleSheets(
+    "FIRE_DETECTED",
+    0,
+    0,
+    temperature,
+    fireStatus,
+    fanStatus,
+    pumpStatus
+  );
+}
+
+
+// =================================================
+// PROCESS SENSOR
+// =================================================
+
+void processSensor(String data)
+{
+  int firstComma = data.indexOf(',');
+
+  int secondComma =
+    data.indexOf(',', firstComma + 1);
+
+  int thirdComma =
+    data.indexOf(',', secondComma + 1);
+
+  int fourthComma =
+    data.indexOf(',', thirdComma + 1);
+
+
+  if (firstComma == -1 ||
+      secondComma == -1 ||
+      thirdComma == -1 ||
+      fourthComma == -1)
+  {
+    Serial.println("Invalid SENSOR data");
+    return;
+  }
+
+
+  temperature =
+    data.substring(
+      firstComma + 1,
+      secondComma
+    ).toFloat();
+
+
+  fireStatus =
+    data.substring(
+      secondComma + 1,
+      thirdComma
+    ).toInt();
+
+
+  fanStatus =
+    data.substring(
+      thirdComma + 1,
+      fourthComma
+    ).toInt();
+
+
+  pumpStatus =
+    data.substring(
+      fourthComma + 1
+    ).toInt();
+
+
+  Serial.println("Sensor values updated.");
+
+  Serial.print("Temperature = ");
+  Serial.println(temperature);
+
+  Serial.print("Fire = ");
+  Serial.println(fireStatus);
+
+  Serial.print("Fan = ");
+  Serial.println(fanStatus);
+
+  Serial.print("Pump = ");
+  Serial.println(pumpStatus);
+}
+
+
+// =================================================
+// URL ENCODE
+// =================================================
+
+String urlEncode(String text)
+{
+  String encoded = "";
+
+  char c;
+
+  char code0;
+  char code1;
+
+  for (int i = 0; i < text.length(); i++)
+  {
+    c = text.charAt(i);
+
+    if (isalnum(c))
+    {
+      encoded += c;
+    }
+    else
+    {
+      code1 = (c & 0xF) + '0';
+
+      if ((c & 0xF) > 9)
+        code1 = (c & 0xF) - 10 + 'A';
+
+      c = (c >> 4) & 0xF;
+
+      code0 = c + '0';
+
+      if (c > 9)
+        code0 = c - 10 + 'A';
+
+      encoded += '%';
+      encoded += code0;
+      encoded += code1;
+    }
+  }
+
+  return encoded;
+}
+
+
+// =================================================
+// SEND DATA TO GOOGLE SHEETS
+// =================================================
+
+void sendToGoogleSheets(
+  String event,
+  int fingerprint,
+  int persons,
+  float temp,
+  int fire,
+  int fan,
+  int pump
+)
+{
+  // Check WiFi
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi disconnected!");
+
+    WiFi.begin(ssid, password);
+
+    return;
+  }
+
+
+  // Secure client
+  WiFiClientSecure client;
+
+  client.setInsecure();
+
+
+  HTTPClient http;
+
+
+  // Build URL
+  String url = String(googleScriptURL);
+
+  url += "?event=";
+  url += urlEncode(event);
+
+  url += "&fingerprint=";
+  url += String(fingerprint);
+
+  url += "&persons=";
+  url += String(persons);
+
+  url += "&temperature=";
+  url += String(temp, 2);
+
+  url += "&fire=";
+  url += String(fire);
+
+  url += "&fan=";
+  url += String(fan);
+
+  url += "&pump=";
+  url += String(pump);
+
+
+  Serial.println("--------------------------------------");
+  Serial.println("Sending to Google Sheets...");
+  Serial.println(url);
+
+
+  // Begin HTTPS
+  http.begin(client, url);
+
+  // Redirect
+  http.setFollowRedirects(
+    HTTPC_STRICT_FOLLOW_REDIRECTS
+  );
+
+  // Timeout
+  http.setTimeout(15000);
+
+
+  // GET request
+  int httpCode = http.GET();
+
+
+  Serial.print("HTTP Response Code: ");
+  Serial.println(httpCode);
+
+
+  if (httpCode > 0)
+  {
+    String response =
+      http.getString();
+
+    Serial.print("Response: ");
+    Serial.println(response);
+
+
+    if (httpCode == HTTP_CODE_OK)
+    {
+      Serial.println(
+        "Google Sheets update SUCCESS!"
+      );
+    }
+  }
+  else
+  {
+    Serial.print(
+      "HTTP Error: "
+    );
+
+    Serial.println(
+      http.errorToString(httpCode)
+    );
+  }
+
+
+  http.end();
+
+  Serial.println("--------------------------------------");
+}

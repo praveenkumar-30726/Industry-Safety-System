@@ -1,0 +1,731 @@
+#include <Servo.h>
+#include <DHT.h>
+#include <SoftwareSerial.h>
+#include <Adafruit_Fingerprint.h>
+
+// =====================================================
+// PIN DEFINITIONS
+// =====================================================
+
+#define FLAME_PIN 5
+
+#define DHT_PIN 6
+#define DHT_TYPE DHT11
+
+#define FAN_RELAY 7
+#define PUMP_RELAY 8
+
+#define FIRE_SERVO_PIN 9
+
+// ESP32 UART
+#define ESP_RX 10
+#define ESP_TX 11
+
+#define BUZZER_PIN 12
+
+// Door servo
+#define DOOR_SERVO_PIN 13
+
+// IR sensor
+#define IR_PIN 4
+
+// R307 fingerprint sensor
+#define FINGER_RX 2
+#define FINGER_TX 3
+
+// =====================================================
+// RELAY LOGIC
+// =====================================================
+
+#define RELAY_ON LOW
+#define RELAY_OFF HIGH
+
+// =====================================================
+// TEMPERATURE
+// =====================================================
+
+#define TEMP_THRESHOLD 30.0
+
+// =====================================================
+// DOOR
+// =====================================================
+
+// OPEN  = 0 degrees
+// CLOSED = 90 degrees
+
+#define DOOR_OPEN 0
+#define DOOR_CLOSED 90
+
+#define DOOR_OPEN_TIME 10000UL
+
+// =====================================================
+// FIRE SERVO
+// =====================================================
+
+#define FIRE_SERVO_MIN 0
+#define FIRE_SERVO_MAX 180
+
+#define FIRE_SERVO_STEP_TIME 15UL
+
+// =====================================================
+// OBJECTS
+// =====================================================
+
+DHT dht(DHT_PIN, DHT_TYPE);
+
+Servo fireServo;
+Servo doorServo;
+
+SoftwareSerial fingerSerial(FINGER_RX, FINGER_TX);
+Adafruit_Fingerprint finger(&fingerSerial);
+
+SoftwareSerial espSerial(ESP_RX, ESP_TX);
+
+// =====================================================
+// VARIABLES
+// =====================================================
+
+float temperature = 0.0;
+
+int fireStatus = 0;
+int fanStatus = 0;
+int pumpStatus = 0;
+
+int matchedFingerprintID = 0;
+
+int personCount = 0;
+
+bool fireHandled = false;
+
+bool doorOpen = false;
+
+unsigned long doorOpenedTime = 0;
+
+bool irPreviousState = HIGH;
+
+// =====================================================
+// FIRE SERVO VARIABLES
+// =====================================================
+
+int fireServoAngle = FIRE_SERVO_MIN;
+
+int fireServoDirection = 1;
+
+unsigned long previousFireServoTime = 0;
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+  Serial.begin(9600);
+
+  // ESP32
+  espSerial.begin(9600);
+
+  // Fingerprint
+  fingerSerial.begin(57600);
+  finger.begin(57600);
+
+  // Pins
+  pinMode(FLAME_PIN, INPUT);
+  pinMode(IR_PIN, INPUT);
+
+  pinMode(FAN_RELAY, OUTPUT);
+  pinMode(PUMP_RELAY, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  // Initial states
+  digitalWrite(FAN_RELAY, RELAY_OFF);
+  digitalWrite(PUMP_RELAY, RELAY_OFF);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // DHT
+  dht.begin();
+
+  // ===================================================
+  // FIRE SERVO
+  // ===================================================
+
+  fireServo.attach(FIRE_SERVO_PIN);
+
+  // Initial position = 90°
+  fireServo.write(90);
+
+  // ===================================================
+  // DOOR SERVO
+  // ===================================================
+
+  doorServo.attach(DOOR_SERVO_PIN);
+
+  // Door CLOSED = 90°
+  doorServo.write(DOOR_CLOSED);
+
+  delay(1000);
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println(" SMART SECURITY + FIRE SAFETY SYSTEM ");
+  Serial.println("======================================");
+
+  Serial.println("Door CLOSED = 90 degrees");
+
+  // ===================================================
+  // CHECK R307
+  // ===================================================
+
+  fingerSerial.listen();
+
+  Serial.println("Checking R307...");
+
+  if (finger.verifyPassword())
+  {
+    Serial.println("R307 FOUND");
+  }
+  else
+  {
+    Serial.println("ERROR: R307 NOT FOUND");
+  }
+
+  if (finger.getTemplateCount() == FINGERPRINT_OK)
+  {
+    Serial.print("Stored fingerprints: ");
+    Serial.println(finger.templateCount);
+  }
+
+  // ===================================================
+  // ESP32 READY
+  // ===================================================
+
+  espSerial.listen();
+
+  espSerial.println("UNO_READY");
+
+  Serial.println("--------------------------------------");
+  Serial.println("SYSTEM READY");
+  Serial.println("Door: CLOSED - 90 degrees");
+  Serial.println("Place fingerprint...");
+  Serial.println("--------------------------------------");
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+  checkFingerprint();
+
+  checkPersonCounter();
+
+  checkDoorTimer();
+
+  checkFireSafety();
+
+  // Continuous fire servo control
+  updateFireServo();
+
+  sendDataToESP32();
+
+  delay(50);
+}
+
+// =====================================================
+// FINGERPRINT
+// =====================================================
+
+void checkFingerprint()
+{
+  fingerSerial.listen();
+
+  uint8_t p;
+
+  p = finger.getImage();
+
+  if (p == FINGERPRINT_NOFINGER)
+  {
+    return;
+  }
+
+  if (p != FINGERPRINT_OK)
+  {
+    Serial.println("Fingerprint image error.");
+    return;
+  }
+
+  Serial.println();
+  Serial.println("Fingerprint detected.");
+
+  p = finger.image2Tz();
+
+  if (p != FINGERPRINT_OK)
+  {
+    Serial.println("Fingerprint conversion failed.");
+    return;
+  }
+
+  p = finger.fingerSearch();
+
+  // ===================================================
+  // MATCH
+  // ===================================================
+
+  if (p == FINGERPRINT_OK)
+  {
+    matchedFingerprintID = finger.fingerID;
+
+    Serial.println();
+    Serial.println("================================");
+    Serial.println("     FINGERPRINT MATCHED");
+    Serial.println("================================");
+
+    Serial.print("Fingerprint ID: ");
+    Serial.println(matchedFingerprintID);
+
+    Serial.print("Confidence: ");
+    Serial.println(finger.confidence);
+
+    if (!doorOpen)
+    {
+      openDoor();
+
+      sendFingerprintToESP32(
+        matchedFingerprintID
+      );
+    }
+    else
+    {
+      Serial.println("Door already OPEN.");
+    }
+
+    delay(1500);
+  }
+
+  // ===================================================
+  // NO MATCH
+  // ===================================================
+
+  else if (p == FINGERPRINT_NOTFOUND)
+  {
+    Serial.println();
+    Serial.println("================================");
+    Serial.println("    FINGERPRINT NOT MATCHED");
+    Serial.println("       ACCESS DENIED");
+    Serial.println("================================");
+
+    espSerial.listen();
+
+    espSerial.println("ACCESS_DENIED");
+
+    delay(1500);
+  }
+
+  else
+  {
+    Serial.println("Fingerprint search error.");
+  }
+}
+
+// =====================================================
+// OPEN DOOR
+// =====================================================
+
+void openDoor()
+{
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("        DOOR OPENING");
+  Serial.println("================================");
+
+  personCount = 0;
+
+  irPreviousState = digitalRead(IR_PIN);
+
+  // OPEN = 0°
+  doorServo.write(DOOR_OPEN);
+
+  doorOpen = true;
+
+  doorOpenedTime = millis();
+
+  Serial.println("Door: OPEN");
+  Serial.println("Door angle: 0 degrees");
+
+  Serial.println("IR counting STARTED");
+
+  Serial.println("Door will close after 10 seconds.");
+}
+
+// =====================================================
+// CLOSE DOOR
+// =====================================================
+
+void closeDoor()
+{
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("      10 SECONDS COMPLETED");
+  Serial.println("================================");
+
+  // CLOSED = 90°
+  doorServo.write(DOOR_CLOSED);
+
+  doorOpen = false;
+
+  Serial.println("Door: CLOSED");
+  Serial.println("Door angle: 90 degrees");
+
+  Serial.print("Fingerprint ID: ");
+  Serial.println(matchedFingerprintID);
+
+  Serial.print("Total persons: ");
+  Serial.println(personCount);
+
+  // Send final result
+  sendFinalResultToESP32(
+    matchedFingerprintID,
+    personCount
+  );
+
+  Serial.println("Final access data sent to ESP32.");
+
+  matchedFingerprintID = 0;
+
+  personCount = 0;
+
+  irPreviousState = digitalRead(IR_PIN);
+
+  delay(500);
+}
+
+// =====================================================
+// DOOR TIMER
+// =====================================================
+
+void checkDoorTimer()
+{
+  if (doorOpen)
+  {
+    if (millis() - doorOpenedTime >= DOOR_OPEN_TIME)
+    {
+      closeDoor();
+    }
+  }
+}
+
+// =====================================================
+// PERSON COUNTER
+// =====================================================
+
+void checkPersonCounter()
+{
+  if (!doorOpen)
+  {
+    irPreviousState = digitalRead(IR_PIN);
+    return;
+  }
+
+  int irState = digitalRead(IR_PIN);
+
+  // LOW = person detected
+
+  if (
+    irState == LOW &&
+    irPreviousState == HIGH
+  )
+  {
+    personCount++;
+
+    Serial.print("PERSON DETECTED");
+    Serial.print(" -> COUNT = ");
+    Serial.println(personCount);
+
+    delay(300);
+  }
+
+  irPreviousState = irState;
+}
+
+// =====================================================
+// FIRE SAFETY
+// =====================================================
+
+void checkFireSafety()
+{
+  int flameState = digitalRead(FLAME_PIN);
+
+  bool fireDetected = (flameState == LOW);
+
+  // ===================================================
+  // TEMPERATURE
+  // ===================================================
+
+  temperature = dht.readTemperature();
+
+  if (!isnan(temperature))
+  {
+    Serial.print("Temperature: ");
+    Serial.print(temperature);
+    Serial.println(" C");
+
+    if (temperature > TEMP_THRESHOLD)
+    {
+      digitalWrite(
+        FAN_RELAY,
+        RELAY_ON
+      );
+
+      fanStatus = 1;
+
+      Serial.println("HIGH TEMPERATURE");
+      Serial.println("Fan: ON");
+    }
+    else
+    {
+      digitalWrite(
+        FAN_RELAY,
+        RELAY_OFF
+      );
+
+      fanStatus = 0;
+
+      Serial.println("Normal Temperature");
+      Serial.println("Fan: OFF");
+    }
+  }
+  else
+  {
+    Serial.println("DHT11 reading error.");
+
+    digitalWrite(
+      FAN_RELAY,
+      RELAY_OFF
+    );
+
+    fanStatus = 0;
+  }
+
+  // ===================================================
+  // FIRE DETECTED
+  // ===================================================
+
+  if (fireDetected)
+  {
+    fireStatus = 1;
+
+    Serial.println();
+    Serial.println("🔥 FIRE DETECTED!");
+
+    // =================================================
+    // WATER PUMP ON
+    // =================================================
+
+    digitalWrite(
+      PUMP_RELAY,
+      RELAY_ON
+    );
+
+    pumpStatus = 1;
+
+    Serial.println("Water Pump: ON");
+
+    // =================================================
+    // BUZZER ON
+    // =================================================
+
+    digitalWrite(
+      BUZZER_PIN,
+      HIGH
+    );
+
+    Serial.println("Buzzer: ON");
+
+    // =================================================
+    // FIRE SERVO
+    // =================================================
+
+    Serial.println("Fire spray servo ACTIVE");
+
+    // Send fire incident only once
+    if (!fireHandled)
+    {
+      sendFireIncidentToESP32();
+
+      fireHandled = true;
+    }
+  }
+
+  // ===================================================
+  // NO FIRE
+  // ===================================================
+
+  else
+  {
+    fireStatus = 0;
+
+    // Pump OFF
+    digitalWrite(
+      PUMP_RELAY,
+      RELAY_OFF
+    );
+
+    pumpStatus = 0;
+
+    // Buzzer OFF
+    digitalWrite(
+      BUZZER_PIN,
+      LOW
+    );
+
+    // Reset fire servo
+    fireServoAngle = 90;
+    fireServoDirection = 1;
+
+    fireServo.write(90);
+
+    // Allow a new fire event
+    fireHandled = false;
+  }
+}
+
+// =====================================================
+// CONTINUOUS FIRE SERVO
+// =====================================================
+
+void updateFireServo()
+{
+  // Only move servo when fire is detected
+  if (fireStatus != 1)
+  {
+    return;
+  }
+
+  // Control servo speed using millis()
+  if (millis() - previousFireServoTime >= FIRE_SERVO_STEP_TIME)
+  {
+    previousFireServoTime = millis();
+
+    // Move servo
+    fireServo.write(fireServoAngle);
+
+    // Change angle
+    fireServoAngle += fireServoDirection;
+
+    // =================================================
+    // REACHED 180°
+    // =================================================
+
+    if (fireServoAngle >= FIRE_SERVO_MAX)
+    {
+      fireServoAngle = FIRE_SERVO_MAX;
+
+      fireServoDirection = -1;
+
+      Serial.println("Fire servo direction: 180 -> 0");
+    }
+
+    // =================================================
+    // REACHED 0°
+    // =================================================
+
+    if (fireServoAngle <= FIRE_SERVO_MIN)
+    {
+      fireServoAngle = FIRE_SERVO_MIN;
+
+      fireServoDirection = 1;
+
+      Serial.println("Fire servo direction: 0 -> 180");
+    }
+  }
+}
+
+// =====================================================
+// SEND FINGERPRINT ID
+// =====================================================
+
+void sendFingerprintToESP32(int fingerprintID)
+{
+  espSerial.listen();
+
+  espSerial.print("AUTHORIZED,");
+  espSerial.println(fingerprintID);
+
+  Serial.print("Sent: AUTHORIZED,");
+  Serial.println(fingerprintID);
+}
+
+// =====================================================
+// SEND FINAL RESULT
+// =====================================================
+
+void sendFinalResultToESP32(
+  int fingerprintID,
+  int count
+)
+{
+  espSerial.listen();
+
+  /*
+     RESULT,FINGERPRINT_ID,PERSON_COUNT
+
+     Example:
+     RESULT,5,2
+  */
+
+  espSerial.print("RESULT,");
+  espSerial.print(fingerprintID);
+  espSerial.print(",");
+  espSerial.println(count);
+
+  Serial.print("Sent: RESULT,");
+  Serial.print(fingerprintID);
+  Serial.print(",");
+  Serial.println(count);
+}
+
+// =====================================================
+// SEND FIRE INCIDENT
+// =====================================================
+
+void sendFireIncidentToESP32()
+{
+  espSerial.listen();
+
+  /*
+     FIRE,TEMPERATURE,FAN,PUMP
+  */
+
+  espSerial.print("FIRE,");
+  espSerial.print(temperature);
+  espSerial.print(",");
+  espSerial.print(fanStatus);
+  espSerial.print(",");
+  espSerial.println(pumpStatus);
+
+  Serial.println("Fire incident sent to ESP32.");
+}
+
+// =====================================================
+// SEND NORMAL SENSOR DATA
+// =====================================================
+
+void sendDataToESP32()
+{
+  espSerial.listen();
+
+  /*
+     Format:
+
+     SENSOR,TEMPERATURE,FIRE,FAN,PUMP
+  */
+
+  espSerial.print("SENSOR,");
+  espSerial.print(temperature);
+  espSerial.print(",");
+  espSerial.print(fireStatus);
+  espSerial.print(",");
+  espSerial.print(fanStatus);
+  espSerial.print(",");
+  espSerial.println(pumpStatus);
+}
